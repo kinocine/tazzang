@@ -25,15 +25,16 @@
     const MAX_IMAGES = 100;
 
     function TazzangPremier() {
-      // 좌우 리사이즈 관련 상태
-      const [sidebarOpen, setSidebarOpen] = useState(true);
-      const [sidebarWidth, setSidebarWidth] = useState(420);
+      // 레이아웃 분할 비율 (% 기준: 15% ~ 85%)
+      const [splitRatio, setSplitRatio] = useState(50); // 기본값: 50% (5:5 균등)
       const [isResizing, setIsResizing] = useState(false);
+      const containerRef = useRef(null);
+
       const [isVertical, setIsVertical] = useState(false);
       const canvasW = isVertical ? 720 : 1280;
       const canvasH = isVertical ? 1280 : 720;
 
-      // 트랙 미디어 (초기 더미 제거: 빈 배열 시작)
+      // 트랙 미디어 (초기 더미 완전 제거: 빈 배열)
       const [images, setImages] = useState([]);
       const [pipMedia, setPipMedia] = useState(null);
       const [audio, setAudio] = useState(null);
@@ -48,7 +49,6 @@
 
       // 효과 및 PIP
       const [kenBurns, setKenBurns] = useState(true);
-      const [bgBlur, setBgBlur] = useState(false); // 고해상도 프리징 방지를 위해 기본 OFF 가능
       const [showPip, setShowPip] = useState(true);
       const [pipLoop, setPipLoop] = useState(true);
       const [pipStart, setPipStart] = useState(0);
@@ -95,12 +95,14 @@
         if (pipEnd > totalDuration || pipEnd <= 0) setPipEnd(totalDuration);
       }, [totalDuration]);
 
-      // 좌우 리사이즈 드래그 이벤트 등록
+      // 마우스 좌우 드래그 분할 제어 (% 기반)
       useEffect(() => {
         const handleMouseMove = (e) => {
-          if (!isResizing) return;
-          const newW = Math.max(220, Math.min(800, e.clientX));
-          setSidebarWidth(newW);
+          if (!isResizing || !containerRef.current) return;
+          const rect = containerRef.current.getBoundingClientRect();
+          const offsetX = e.clientX - rect.left;
+          const newRatio = Math.max(15, Math.min(85, (offsetX / rect.width) * 100));
+          setSplitRatio(newRatio);
         };
         const handleMouseUp = () => {
           if (isResizing) setIsResizing(false);
@@ -150,7 +152,7 @@
         return { x, y, w, h };
       }, [canvasW, canvasH, pipSize, pipPos]);
 
-      // 싱크 조절
+      // PIP 비디오/오디오 싱크
       useEffect(() => {
         const v = pipVideoRef.current;
         if (!v || !pipMedia || pipMedia.kind !== "video") return;
@@ -176,7 +178,7 @@
         if (isPlaying) a.play().catch(()=>{}); else a.pause();
       }, [audio, currentTime, isPlaying]);
 
-      // 캔버스 드로잉 (메모리 누수 방지 및 try-catch 감싸기)
+      // 캔버스 드로잉
       const renderFrame = useCallback(() => {
         const canvas = canvasRef.current;
         if (!canvas) return;
@@ -187,7 +189,6 @@
         ctx.fillRect(0, 0, canvasW, canvasH);
 
         try {
-          // 메인 대화면 렌더
           if (isSwapped && pipMedia) {
             if (pipMedia.kind === "video") {
               const v = pipVideoRef.current;
@@ -202,12 +203,6 @@
               const progress = currentActiveImage.localTime / (currentActiveImage.duration || 4);
               const scale = kenBurns ? 1 + progress * 0.1 : 1.0;
               
-              if (bgBlur) {
-                ctx.save();
-                ctx.filter = "blur(20px) brightness(0.4)";
-                ctx.drawImage(img, 0, 0, canvasW, canvasH);
-                ctx.restore();
-              }
               const aspect = img.naturalWidth / img.naturalHeight;
               const canvasAspect = canvasW / canvasH;
               let dw, dh;
@@ -216,13 +211,12 @@
               ctx.drawImage(img, (canvasW - dw)/2, (canvasH - dh)/2, dw, dh);
             }
           } else {
-            ctx.fillStyle = "#222";
-            ctx.font = "bold 16px sans-serif";
+            ctx.fillStyle = "#333";
+            ctx.font = "bold 18px sans-serif";
             ctx.textAlign = "center";
-            ctx.fillText("좌측에서 이미지를 추가하세요", canvasW / 2, canvasH / 2);
+            ctx.fillText("등록된 이미지가 없습니다 (좌측에서 사진 추가)", canvasW / 2, canvasH / 2);
           }
 
-          // 작은 PIP 서브 화면 렌더
           if (showPip) {
             const coords = getPipCoords();
             ctx.save();
@@ -261,13 +255,13 @@
             ctx.restore();
           }
         } catch (err) {
-          console.error("렌더링 오류 방지:", err);
+          console.error(err);
         }
-      }, [canvasW, canvasH, isSwapped, pipMedia, currentActiveImage, kenBurns, bgBlur, showPip, getPipCoords, currentTime, pipStart, pipEnd]);
+      }, [canvasW, canvasH, isSwapped, pipMedia, currentActiveImage, kenBurns, showPip, getPipCoords, currentTime, pipStart, pipEnd]);
 
       useEffect(() => { renderFrame(); }, [renderFrame]);
 
-      // 실시간 재생 타이머
+      // 재생 루프
       useEffect(() => {
         if (!isPlaying) return;
         let lastTime = performance.now();
@@ -290,7 +284,7 @@
         return () => cancelAnimationFrame(frameId);
       }, [isPlaying, totalDuration, isRecording]);
 
-      // 파일 로드 핸들러
+      // 파일 업로드
       const handleImageFiles = (files) => {
         if (!files) return;
         const remaining = MAX_IMAGES - images.length;
@@ -310,7 +304,7 @@
           });
         });
         setImages(prev => [...prev, ...newImgs]);
-        showToast(`${newImgs.length}장 이미지가 등록되었습니다.`);
+        showToast(`${newImgs.length}장 추가 완료`);
       };
 
       const handlePipFile = (files) => {
@@ -330,7 +324,7 @@
           imgCache.current.set(url, img);
           setPipMedia({ id: "pip", kind: "image", name: file.name, url, duration: 10 });
         }
-        showToast(`PIP 미디어 장착: ${file.name}`);
+        showToast(`PIP 등록: ${file.name}`);
       };
 
       const handleAudioFile = (files) => {
@@ -340,11 +334,11 @@
         const a = new Audio(url);
         a.onloadedmetadata = () => {
           setAudio({ name: file.name, url, duration: a.duration });
-          showToast(`오디오 동기화 완료 (${a.duration.toFixed(1)}초)`);
+          showToast(`오디오 동기화: ${file.name} (${a.duration.toFixed(1)}초)`);
         };
       };
 
-      // 드래그 앤 드롭 순서 변경
+      // 순서 드래그
       const onDragStart = (idx) => { dragItemIdx.current = idx; };
       const onDragOver = (e) => { e.preventDefault(); };
       const onDrop = (targetIdx) => {
@@ -354,16 +348,15 @@
         copy.splice(targetIdx, 0, moved);
         dragItemIdx.current = null;
         setImages(copy);
-        showToast("순서가 변경되었습니다.");
+        showToast("순서 변경 완료");
       };
 
-      // [녹화 시작] 및 [중지 시 그 순간까지만 MP4 저장] 로직
+      // 실시간 녹화 시작 / 중지 저장
       const startRecording = () => {
         const canvas = canvasRef.current;
         if (!canvas) return;
         const stream = canvas.captureStream(25);
 
-        // 오디오 트랙 병합
         try {
           const audioElem = audioRef.current;
           if (audioElem) {
@@ -375,7 +368,7 @@
         } catch(e) {}
 
         const mime = MediaRecorder.isTypeSupported("video/mp4") ? "video/mp4" : "video/webm";
-        const recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 3000000 });
+        const recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 3500000 });
         recordedChunksRef.current = [];
 
         recorder.ondataavailable = (e) => {
@@ -387,9 +380,9 @@
           const url = URL.createObjectURL(blob);
           const a = document.createElement("a");
           a.href = url;
-          a.download = `tazzang-record-${Date.now()}.${mime.includes("mp4") ? "mp4" : "webm"}`;
+          a.download = `tazzang-clip-${Date.now()}.${mime.includes("mp4") ? "mp4" : "webm"}`;
           a.click();
-          showToast(`현재 위치까지 저장 완료 (${(blob.size / 1024 / 1024).toFixed(1)}MB)`);
+          showToast(`현재까지 저장 완료 (${(blob.size / 1024 / 1024).toFixed(1)}MB)`);
           setTimeout(() => URL.revokeObjectURL(url), 10000);
         };
 
@@ -397,7 +390,7 @@
         mediaRecorderRef.current = recorder;
         setIsRecording(true);
         setIsPlaying(true);
-        showToast("🔴 실시간 녹화 시작됨 (중지 누르면 즉시 저장)");
+        showToast("🔴 녹화 시작 (언제든 중지 시 현재까지 저장)");
       };
 
       const stopRecordingAndSave = () => {
@@ -413,26 +406,47 @@
           <video ref={pipVideoRef} muted playsInline className="hidden" />
           <audio ref={audioRef} src={audio?.url} preload="auto" className="hidden" />
 
-          {/* 상단 헤더 */}
-          <header className="h-[52px] shrink-0 flex items-center justify-between px-3 bg-[#1a1a1a] border-b border-[#2a2a2a]">
+          {/* 상단 통합 헤더 & 3단 분할 레이아웃 전환기 */}
+          <header className="h-[52px] shrink-0 flex items-center justify-between px-3 bg-[#1a1a1a] border-b border-[#2a2a2a] gap-2">
             <div className="flex items-center gap-3">
-              <button onClick={() => setSidebarOpen(!sidebarOpen)} className="w-7 h-7 rounded bg-[#2a2a2a] border border-[#333] flex items-center justify-center hover:bg-[#333]">
-                {sidebarOpen ? "◀" : "▶"}
-              </button>
               <div className="px-2 py-0.5 rounded bg-[#facc15] text-black font-black text-[11px]">TP</div>
-              <span className="font-bold text-[13px]">타짱 프리미어</span>
-              <span className="text-[#777] text-[10px] hidden md:inline">| ◁▷ 바 드래그로 너비 조절</span>
+              <span className="font-bold text-[13px] tracking-tight">타짱 프리미어</span>
+
+              {/* 3단계 화면 레이아웃 스위치 (좌측 최대 / 일반 5:5 / 우측 최대) */}
+              <div className="flex items-center bg-[#252525] p-0.5 rounded-lg border border-[#333] ml-2">
+                <button
+                  onClick={() => setSplitRatio(75)}
+                  className={`h-6 px-2.5 rounded text-[10px] font-bold transition flex items-center gap-1 ${splitRatio >= 70 ? "bg-[#facc15] text-black shadow" : "text-[#888] hover:text-white"}`}
+                  title="좌측 편집창을 75%로 크게 확대"
+                >
+                  <span>◀</span> 좌측 최대
+                </button>
+                <button
+                  onClick={() => setSplitRatio(50)}
+                  className={`h-6 px-2.5 rounded text-[10px] font-bold transition ${splitRatio > 35 && splitRatio < 70 ? "bg-[#facc15] text-black shadow" : "text-[#888] hover:text-white"}`}
+                  title="좌측과 우측을 정확히 반반(5:5) 균등 분할"
+                >
+                  일반 (5:5)
+                </button>
+                <button
+                  onClick={() => setSplitRatio(25)}
+                  className={`h-6 px-2.5 rounded text-[10px] font-bold transition flex items-center gap-1 ${splitRatio <= 35 ? "bg-[#facc15] text-black shadow" : "text-[#888] hover:text-white"}`}
+                  title="우측 프리뷰 모니터를 75%로 크게 확대"
+                >
+                  우측 최대 <span>▶</span>
+                </button>
+              </div>
             </div>
 
             <div className="flex items-center gap-2">
               <button onClick={() => setIsVertical(!isVertical)} className={`h-7 px-3 rounded border text-[11px] font-bold ${isVertical ? "bg-[#facc15] text-black border-[#facc15]" : "bg-[#252525] border-[#3a3a3a] text-[#aaa]"}`}>
                 {isVertical ? "9:16 쇼츠" : "16:9 와이드"}
               </button>
+
               <button onClick={() => setIsSwapped(!isSwapped)} className="h-7 px-3 rounded bg-[#a78bfa]/20 border border-[#a78bfa]/40 text-[#c4b5fd] font-bold hover:bg-[#a78bfa]/30 text-[11px]">
                 🔄 화면 맞교환 ({isSwapped ? "스왑 ON" : "스왑 OFF"})
               </button>
 
-              {/* 녹화 및 중지 즉시 저장 버튼 */}
               {!isRecording ? (
                 <button onClick={startRecording} className="h-7 px-3.5 rounded bg-[#ef4444] hover:bg-[#dc2626] text-white font-bold shadow text-[11px] flex items-center gap-1">
                   <span>🔴</span> 녹화 시작
@@ -451,16 +465,16 @@
             </div>
           )}
 
-          {/* 작업 영역 */}
-          <div className="flex-1 flex min-h-0 relative">
-            {/* 좌측 패널 (220px ~ 800px 자유 리사이즈) */}
+          {/* 메인 분할 컨테이너 */}
+          <div ref={containerRef} className="flex-1 flex min-h-0 relative select-none">
+            {/* 좌측 패널 (splitRatio % 비율 적용) */}
             <aside
-              className={`shrink-0 bg-[#171717] flex flex-col overflow-hidden ${sidebarOpen ? "" : "w-0"}`}
-              style={{ width: sidebarOpen ? sidebarWidth : 0 }}
+              className="bg-[#171717] flex flex-col overflow-hidden"
+              style={{ width: `${splitRatio}%` }}
             >
               <div className="h-[36px] shrink-0 flex items-center justify-between px-3 bg-[#1e1e1e] border-b border-[#2a2a2a]">
-                <span className="text-[11px] font-bold text-[#aaa]">편집 설정 패널 ({sidebarWidth}px)</span>
-                <span className="text-[9px] text-[#666]">우측 경계선을 마우스로 잡고 당기세요</span>
+                <span className="text-[11px] font-bold text-[#aaa]">편집 설정 패널 ({splitRatio.toFixed(0)}%)</span>
+                <span className="text-[9px] text-[#666]">중앙 분할 바를 드래그해서 자유 조절</span>
               </div>
 
               <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-3">
@@ -504,10 +518,10 @@
                     )}
                   </div>
 
-                  {/* 썸네일 그리드: 창 너비에 따라 3열~5열 유동 확장 */}
+                  {/* 패널 넓이에 따라 3~6열 유동 자동 조절되는 썸네일 그리드 */}
                   <div
-                    className="grid gap-1.5 max-h-[220px] overflow-auto pr-1"
-                    style={{ gridTemplateColumns: `repeat(${Math.max(2, Math.floor(sidebarWidth / 100))}, minmax(0, 1fr))` }}
+                    className="grid gap-1.5 max-h-[260px] overflow-auto pr-1"
+                    style={{ gridTemplateColumns: `repeat(${splitRatio >= 60 ? 5 : splitRatio >= 40 ? 4 : 3}, minmax(0, 1fr))` }}
                   >
                     {images.map((img, idx) => (
                       <div
@@ -533,7 +547,7 @@
                     ))}
                     {images.length === 0 && (
                       <div className="col-span-full py-8 text-center text-[11px] text-[#555] border-2 border-dashed border-[#2a2a2a] rounded">
-                        등록된 이미지가 없습니다.<br/>[+ 사진 추가] 버튼을 눌러 등록하세요.
+                        등록된 이미지가 없습니다.<br/>[+ 사진 추가] 버튼을 눌러 이미지를 넣으세요.
                       </div>
                     )}
                   </div>
@@ -593,35 +607,38 @@
                       <button onClick={() => setAudio(null)} className="w-5 h-5 rounded bg-[#222] text-[10px]">✕</button>
                     </div>
                   ) : (
-                    <div className="text-[10px] text-[#6bb89a]/50">오디오 파일이 등록되면 전체 러닝타임이 자동 동기화됩니다.</div>
+                    <div className="text-[10px] text-[#6bb89a]/50">오디오 등록 시 전체 길이가 자동 동기화됩니다.</div>
                   )}
                 </div>
               </div>
             </aside>
 
-            {/* 좌우 리사이즈 드래그 분할 바 (◁▷) */}
-            {sidebarOpen && (
-              <div
-                onMouseDown={() => setIsResizing(true)}
-                className={`w-[6px] shrink-0 bg-[#1e1e1e] border-r border-[#2a2a2a] hover:bg-[#fbbf24] cursor-col-resize flex items-center justify-center transition-colors ${isResizing ? "bg-[#fbbf24]" : ""}`}
-                title="마우스로 좌우 드래그하여 패널 너비 조절"
-              >
-                <div className="w-[2px] h-6 bg-[#444] rounded"></div>
-              </div>
-            )}
+            {/* 정중앙 마우스 드래그 분할 바 (◁ ▷) */}
+            <div
+              onMouseDown={() => setIsResizing(true)}
+              className={`w-[10px] shrink-0 bg-[#1e1e1e] border-x border-[#2a2a2a] hover:bg-[#fbbf24] cursor-col-resize flex flex-col items-center justify-center gap-1 transition-colors relative z-20 ${isResizing ? "bg-[#fbbf24]" : ""}`}
+              title="마우스로 잡고 좌우로 끌면 분할 비율 조절"
+            >
+              <div className="w-[2px] h-4 bg-[#555] rounded"></div>
+              <span className="text-[8px] text-[#888] select-none font-bold">◁▷</span>
+              <div className="w-[2px] h-4 bg-[#555] rounded"></div>
+            </div>
 
-            {/* 프리뷰 모니터 & 타임라인 */}
-            <section className="flex-1 flex flex-col min-w-0 bg-[#0f0f0f]">
+            {/* 우측 프리뷰 모니터 & 타임라인 영역 */}
+            <section
+              className="flex flex-col min-w-0 bg-[#0f0f0f]"
+              style={{ width: `${100 - splitRatio}%` }}
+            >
               <div className="h-[36px] shrink-0 flex items-center justify-between px-3 bg-[#181818] border-b border-[#2a2a2a]">
                 <div className="flex items-center gap-2">
                   <span className="px-1.5 py-0.5 rounded bg-[#333] text-[#aaa] text-[9px] font-bold">PREVIEW</span>
                   <span className="font-mono text-[#facc15] font-bold">{currentTime.toFixed(2)}s / {totalDuration.toFixed(1)}s</span>
                   {isRecording && <span className="px-1.5 py-0.5 rounded bg-[#ef4444] text-white font-bold text-[9px] animate-pulse">REC ON</span>}
                 </div>
-                <div className="text-[10px] text-[#777]">캔버스를 더블클릭하면 PIP와 메인 화면이 맞바뀝니다.</div>
+                <div className="text-[10px] text-[#777]">캔버스 더블클릭 시 메인 ↔ PIP 화면 교환</div>
               </div>
 
-              {/* 캔버스 디스플레이 */}
+              {/* 캔버스 화면 디스플레이 */}
               <div
                 className="flex-1 bg-black flex items-center justify-center relative overflow-hidden cursor-pointer"
                 onDoubleClick={() => setIsSwapped(!isSwapped)}
