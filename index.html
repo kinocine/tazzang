@@ -1,713 +1,1152 @@
 <!DOCTYPE html>
 <html lang="ko">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>타짱 프리미어</title>
-  <script src="https://cdn.tailwindcss.com"></script>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>KinoCine 리뷰 영상 제작기 v3 (균등 분산 & 구독·좋아요 오버레이)</title>
   <style>
-    *, :after, :before { box-sizing: border-box; }
-    body { margin: 0; background: #0f0f0f; color: #e5e5e5; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; user-select: none; overflow: hidden; }
-    ::-webkit-scrollbar { width: 6px; height: 6px; }
-    ::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
-    ::-webkit-scrollbar-track { background: #141414; }
-  </style>
-  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-</head>
-<body>
-  <div id="root"></div>
+    :root {
+      --bg: #111315;
+      --panel: #1a1d21;
+      --border: #2c3036;
+      --text: #e6e8eb;
+      --muted: #8b929a;
+      --accent: #facc15;
+      --accent-text: #0f1012;
+      --green: #10b981;
+      --blue: #38bdf8;
+      --purple: #a78bfa;
+      --red: #ef4444;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      user-select: none;
+    }
+    header {
+      height: 54px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      padding: 0 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .brand { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 15px; }
+    .badge { background: var(--accent); color: var(--accent-text); padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 900; }
+    .controls-top { display: flex; gap: 10px; align-items: center; }
+    button {
+      background: #262a30;
+      color: var(--text);
+      border: 1px solid #383d45;
+      padding: 7px 14px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: 0.15s;
+    }
+    button:hover:not(:disabled) { background: #32373f; }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 800; }
+    button.primary:hover:not(:disabled) { background: #fde047; }
+    button.export { background: var(--red); color: #fff; border-color: var(--red); font-weight: 700; }
+    button.export:hover:not(:disabled) { background: #dc2626; }
 
-  <script type="text/babel">
-    const { useState, useEffect, useRef, useMemo, useCallback } = React;
-
-    const MAX_IMAGES = 100;
-
-    function TazzangPremier() {
-      // 레이아웃 분할 비율 (% 기준: 15% ~ 85%)
-      const [splitRatio, setSplitRatio] = useState(50); // 기본값: 50% (5:5 균등)
-      const [isResizing, setIsResizing] = useState(false);
-      const containerRef = useRef(null);
-
-      const [isVertical, setIsVertical] = useState(false);
-      const canvasW = isVertical ? 720 : 1280;
-      const canvasH = isVertical ? 1280 : 720;
-
-      // 트랙 미디어 (초기 더미 완전 제거: 빈 배열)
-      const [images, setImages] = useState([]);
-      const [pipMedia, setPipMedia] = useState(null);
-      const [audio, setAudio] = useState(null);
-
-      // 재생 상태
-      const [currentTime, setCurrentTime] = useState(0);
-      const [isPlaying, setIsPlaying] = useState(false);
-
-      // 시간 배분 설정
-      const [durationMode, setDurationMode] = useState("fit");
-      const [fixedPerSec, setFixedPerSec] = useState(4.0);
-
-      // 효과 및 PIP
-      const [kenBurns, setKenBurns] = useState(true);
-      const [showPip, setShowPip] = useState(true);
-      const [pipLoop, setPipLoop] = useState(true);
-      const [pipStart, setPipStart] = useState(0);
-      const [pipEnd, setPipEnd] = useState(60);
-      const [pipSize, setPipSize] = useState(25);
-      const [pipPos, setPipPos] = useState("우하단");
-      const [isSwapped, setIsSwapped] = useState(false);
-
-      // 실시간 구간 MP4 내보내기 상태
-      const [isRecording, setIsRecording] = useState(false);
-      const mediaRecorderRef = useRef(null);
-      const recordedChunksRef = useRef([]);
-
-      const [toastMsg, setToastMsg] = useState("");
-      const showToast = (msg) => { setToastMsg(msg); setTimeout(() => setToastMsg(""), 3000); };
-
-      // Refs
-      const canvasRef = useRef(null);
-      const pipVideoRef = useRef(null);
-      const audioRef = useRef(null);
-      const imgCache = useRef(new Map());
-      const dragItemIdx = useRef(null);
-
-      // 총 영상 길이
-      const totalDuration = useMemo(() => {
-        if (audio && audio.duration > 0) return audio.duration;
-        if (images.length === 0) return 30;
-        if (durationMode === "loop") return images.length * fixedPerSec;
-        return images.reduce((acc, cur) => acc + (cur.duration || 4), 0);
-      }, [audio, images, durationMode, fixedPerSec]);
-
-      // 시간 자동 배분
-      useEffect(() => {
-        if (images.length === 0) return;
-        if (durationMode === "fit") {
-          const autoDuration = totalDuration / images.length;
-          setImages(prev => prev.map(img => ({ ...img, duration: autoDuration })));
-        } else {
-          setImages(prev => prev.map(img => ({ ...img, duration: fixedPerSec })));
-        }
-      }, [durationMode, fixedPerSec, totalDuration, images.length]);
-
-      useEffect(() => {
-        if (pipEnd > totalDuration || pipEnd <= 0) setPipEnd(totalDuration);
-      }, [totalDuration]);
-
-      // 마우스 좌우 드래그 분할 제어 (% 기반)
-      useEffect(() => {
-        const handleMouseMove = (e) => {
-          if (!isResizing || !containerRef.current) return;
-          const rect = containerRef.current.getBoundingClientRect();
-          const offsetX = e.clientX - rect.left;
-          const newRatio = Math.max(15, Math.min(85, (offsetX / rect.width) * 100));
-          setSplitRatio(newRatio);
-        };
-        const handleMouseUp = () => {
-          if (isResizing) setIsResizing(false);
-        };
-        window.addEventListener("mousemove", handleMouseMove);
-        window.addEventListener("mouseup", handleMouseUp);
-        return () => {
-          window.removeEventListener("mousemove", handleMouseMove);
-          window.removeEventListener("mouseup", handleMouseUp);
-        };
-      }, [isResizing]);
-
-      // 현재 활성 이미지
-      const currentActiveImage = useMemo(() => {
-        if (images.length === 0) return null;
-        if (durationMode === "loop") {
-          const cycleDuration = images.length * fixedPerSec;
-          if (cycleDuration <= 0) return { img: images[0], localTime: 0, duration: fixedPerSec };
-          const loopTime = currentTime % cycleDuration;
-          const idx = Math.min(images.length - 1, Math.floor(loopTime / fixedPerSec));
-          return { img: images[idx], localTime: loopTime - (idx * fixedPerSec), duration: fixedPerSec };
-        } else {
-          let accum = 0;
-          for (let img of images) {
-            const d = img.duration || (totalDuration / images.length);
-            if (currentTime >= accum && currentTime < accum + d) {
-              return { img, localTime: currentTime - accum, duration: d };
-            }
-            accum += d;
-          }
-          return { img: images[images.length - 1], localTime: 0, duration: images[images.length - 1].duration || 4 };
-        }
-      }, [images, currentTime, durationMode, fixedPerSec, totalDuration]);
-
-      // PIP 좌표 계산
-      const getPipCoords = useCallback(() => {
-        const w = canvasW * (pipSize / 100);
-        const h = canvasH * (pipSize / 100);
-        let x = 0, y = 0;
-        switch (pipPos) {
-          case "좌하단": x = 24; y = canvasH - h - 24; break;
-          case "우상단": x = canvasW - w - 24; y = 24; break;
-          case "좌상단": x = 24; y = 24; break;
-          case "중앙":   x = (canvasW - w) / 2; y = (canvasH - h) / 2; break;
-          default:      x = canvasW - w - 24; y = canvasH - h - 24; break;
-        }
-        return { x, y, w, h };
-      }, [canvasW, canvasH, pipSize, pipPos]);
-
-      // PIP 비디오/오디오 싱크
-      useEffect(() => {
-        const v = pipVideoRef.current;
-        if (!v || !pipMedia || pipMedia.kind !== "video") return;
-        if (v.src !== pipMedia.url) { v.src = pipMedia.url; v.load(); }
-        const inRange = currentTime >= pipStart && currentTime <= pipEnd;
-        if (!inRange && !isSwapped) { v.pause(); return; }
-
-        let playHead = currentTime - pipStart;
-        const dur = pipMedia.duration || 5;
-        playHead = pipLoop ? (playHead % dur) : Math.min(playHead, dur);
-        if (Math.abs(v.currentTime - playHead) > 0.3) {
-          try { v.currentTime = Math.max(0, playHead); } catch(e) {}
-        }
-        if (isPlaying) v.play().catch(()=>{}); else v.pause();
-      }, [pipMedia, currentTime, isPlaying, pipStart, pipEnd, pipLoop, isSwapped]);
-
-      useEffect(() => {
-        const a = audioRef.current;
-        if (!a || !audio) return;
-        if (Math.abs(a.currentTime - currentTime) > 0.4) {
-          try { a.currentTime = Math.min(currentTime, a.duration || currentTime); } catch(e) {}
-        }
-        if (isPlaying) a.play().catch(()=>{}); else a.pause();
-      }, [audio, currentTime, isPlaying]);
-
-      // 캔버스 드로잉
-      const renderFrame = useCallback(() => {
-        const canvas = canvasRef.current;
-        if (!canvas) return;
-        const ctx = canvas.getContext("2d");
-        if (!ctx) return;
-
-        ctx.fillStyle = "#0a0a0a";
-        ctx.fillRect(0, 0, canvasW, canvasH);
-
-        try {
-          if (isSwapped && pipMedia) {
-            if (pipMedia.kind === "video") {
-              const v = pipVideoRef.current;
-              if (v && v.readyState >= 2) ctx.drawImage(v, 0, 0, canvasW, canvasH);
-            } else {
-              const img = imgCache.current.get(pipMedia.url);
-              if (img && img.complete) ctx.drawImage(img, 0, 0, canvasW, canvasH);
-            }
-          } else if (currentActiveImage && currentActiveImage.img.url) {
-            const img = imgCache.current.get(currentActiveImage.img.url);
-            if (img && img.complete && img.naturalWidth) {
-              const progress = currentActiveImage.localTime / (currentActiveImage.duration || 4);
-              const scale = kenBurns ? 1 + progress * 0.1 : 1.0;
-              
-              const aspect = img.naturalWidth / img.naturalHeight;
-              const canvasAspect = canvasW / canvasH;
-              let dw, dh;
-              if (aspect > canvasAspect) { dh = canvasH * scale; dw = dh * aspect; }
-              else { dw = canvasW * scale; dh = dw / aspect; }
-              ctx.drawImage(img, (canvasW - dw)/2, (canvasH - dh)/2, dw, dh);
-            }
-          } else {
-            ctx.fillStyle = "#333";
-            ctx.font = "bold 18px sans-serif";
-            ctx.textAlign = "center";
-            ctx.fillText("등록된 이미지가 없습니다 (좌측에서 사진 추가)", canvasW / 2, canvasH / 2);
-          }
-
-          if (showPip) {
-            const coords = getPipCoords();
-            ctx.save();
-            ctx.shadowColor = "rgba(0,0,0,0.6)";
-            ctx.shadowBlur = 10;
-            ctx.fillStyle = "#000";
-            ctx.fillRect(coords.x - 2, coords.y - 2, coords.w + 4, coords.h + 4);
-            ctx.shadowBlur = 0;
-
-            if (isSwapped) {
-              if (currentActiveImage && currentActiveImage.img.url) {
-                const img = imgCache.current.get(currentActiveImage.img.url);
-                if (img && img.complete) ctx.drawImage(img, coords.x, coords.y, coords.w, coords.h);
-              }
-              ctx.fillStyle = "#facc15";
-              ctx.fillRect(coords.x, coords.y - 18, 90, 18);
-              ctx.fillStyle = "#000";
-              ctx.font = "bold 10px sans-serif";
-              ctx.textAlign = "left";
-              ctx.fillText("STILL (SWAPPED)", coords.x + 4, coords.y - 5);
-            } else if (pipMedia && (currentTime >= pipStart && currentTime <= pipEnd)) {
-              if (pipMedia.kind === "video") {
-                const v = pipVideoRef.current;
-                if (v && v.readyState >= 2) ctx.drawImage(v, coords.x, coords.y, coords.w, coords.h);
-              } else {
-                const img = imgCache.current.get(pipMedia.url);
-                if (img && img.complete) ctx.drawImage(img, coords.x, coords.y, coords.w, coords.h);
-              }
-              ctx.fillStyle = "#a78bfa";
-              ctx.fillRect(coords.x, coords.y - 18, 80, 18);
-              ctx.fillStyle = "#000";
-              ctx.font = "bold 10px sans-serif";
-              ctx.textAlign = "left";
-              ctx.fillText("PIP PLAY", coords.x + 4, coords.y - 5);
-            }
-            ctx.restore();
-          }
-        } catch (err) {
-          console.error(err);
-        }
-      }, [canvasW, canvasH, isSwapped, pipMedia, currentActiveImage, kenBurns, showPip, getPipCoords, currentTime, pipStart, pipEnd]);
-
-      useEffect(() => { renderFrame(); }, [renderFrame]);
-
-      // 재생 루프
-      useEffect(() => {
-        if (!isPlaying) return;
-        let lastTime = performance.now();
-        let frameId;
-        const tick = (now) => {
-          const delta = (now - lastTime) / 1000;
-          lastTime = now;
-          setCurrentTime(prev => {
-            const next = prev + delta;
-            if (next >= totalDuration) {
-              if (isRecording) stopRecordingAndSave();
-              setIsPlaying(false);
-              return 0;
-            }
-            return next;
-          });
-          frameId = requestAnimationFrame(tick);
-        };
-        frameId = requestAnimationFrame(tick);
-        return () => cancelAnimationFrame(frameId);
-      }, [isPlaying, totalDuration, isRecording]);
-
-      // 파일 업로드
-      const handleImageFiles = (files) => {
-        if (!files) return;
-        const remaining = MAX_IMAGES - images.length;
-        if (remaining <= 0) { showToast(`최대 ${MAX_IMAGES}장까지만 등록 가능합니다.`); return; }
-
-        const newImgs = [];
-        Array.from(files).slice(0, remaining).forEach(file => {
-          const url = URL.createObjectURL(file);
-          const img = new Image();
-          img.src = url;
-          imgCache.current.set(url, img);
-          newImgs.push({
-            id: Math.random().toString(36).substring(2),
-            name: file.name,
-            url,
-            duration: fixedPerSec
-          });
-        });
-        setImages(prev => [...prev, ...newImgs]);
-        showToast(`${newImgs.length}장 추가 완료`);
-      };
-
-      const handlePipFile = (files) => {
-        if (!files || files.length === 0) return;
-        const file = files[0];
-        const url = URL.createObjectURL(file);
-        if (file.type.startsWith("video/")) {
-          const v = document.createElement("video");
-          v.src = url;
-          v.onloadedmetadata = () => {
-            setPipMedia({ id: "pip", kind: "video", name: file.name, url, duration: v.duration });
-            setPipEnd(Math.min(totalDuration, v.duration));
-          };
-        } else {
-          const img = new Image();
-          img.src = url;
-          imgCache.current.set(url, img);
-          setPipMedia({ id: "pip", kind: "image", name: file.name, url, duration: 10 });
-        }
-        showToast(`PIP 등록: ${file.name}`);
-      };
-
-      const handleAudioFile = (files) => {
-        if (!files || files.length === 0) return;
-        const file = files[0];
-        const url = URL.createObjectURL(file);
-        const a = new Audio(url);
-        a.onloadedmetadata = () => {
-          setAudio({ name: file.name, url, duration: a.duration });
-          showToast(`오디오 동기화: ${file.name} (${a.duration.toFixed(1)}초)`);
-        };
-      };
-
-      // 순서 드래그
-      const onDragStart = (idx) => { dragItemIdx.current = idx; };
-      const onDragOver = (e) => { e.preventDefault(); };
-      const onDrop = (targetIdx) => {
-        if (dragItemIdx.current === null || dragItemIdx.current === targetIdx) return;
-        const copy = [...images];
-        const [moved] = copy.splice(dragItemIdx.current, 1);
-        copy.splice(targetIdx, 0, moved);
-        dragItemIdx.current = null;
-        setImages(copy);
-        showToast("순서 변경 완료");
-      };
-
-      // 실시간 녹화 시작 / 중지 저장
-      const startRecording = () => {
-        const canvas = canvasRef.current;
-        if (!canvas) return;
-        const stream = canvas.captureStream(25);
-
-        try {
-          const audioElem = audioRef.current;
-          if (audioElem) {
-            const audioStream = audioElem.captureStream ? audioElem.captureStream() : audioElem.mozCaptureStream ? audioElem.mozCaptureStream() : null;
-            if (audioStream && audioStream.getAudioTracks().length > 0) {
-              stream.addTrack(audioStream.getAudioTracks()[0]);
-            }
-          }
-        } catch(e) {}
-
-        const mime = MediaRecorder.isTypeSupported("video/mp4") ? "video/mp4" : "video/webm";
-        const recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 3500000 });
-        recordedChunksRef.current = [];
-
-        recorder.ondataavailable = (e) => {
-          if (e.data && e.data.size > 0) recordedChunksRef.current.push(e.data);
-        };
-
-        recorder.onstop = () => {
-          const blob = new Blob(recordedChunksRef.current, { type: mime });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement("a");
-          a.href = url;
-          a.download = `tazzang-clip-${Date.now()}.${mime.includes("mp4") ? "mp4" : "webm"}`;
-          a.click();
-          showToast(`현재까지 저장 완료 (${(blob.size / 1024 / 1024).toFixed(1)}MB)`);
-          setTimeout(() => URL.revokeObjectURL(url), 10000);
-        };
-
-        recorder.start(100);
-        mediaRecorderRef.current = recorder;
-        setIsRecording(true);
-        setIsPlaying(true);
-        showToast("🔴 녹화 시작 (언제든 중지 시 현재까지 저장)");
-      };
-
-      const stopRecordingAndSave = () => {
-        if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
-          mediaRecorderRef.current.stop();
-        }
-        setIsRecording(false);
-        setIsPlaying(false);
-      };
-
-      return (
-        <div className="h-screen flex flex-col bg-[#0f0f0f] text-[#e5e5e5] text-[12px]">
-          <video ref={pipVideoRef} muted playsInline className="hidden" />
-          <audio ref={audioRef} src={audio?.url} preload="auto" className="hidden" />
-
-          {/* 상단 통합 헤더 & 3단 분할 레이아웃 전환기 */}
-          <header className="h-[52px] shrink-0 flex items-center justify-between px-3 bg-[#1a1a1a] border-b border-[#2a2a2a] gap-2">
-            <div className="flex items-center gap-3">
-              <div className="px-2 py-0.5 rounded bg-[#facc15] text-black font-black text-[11px]">TP</div>
-              <span className="font-bold text-[13px] tracking-tight">타짱 프리미어</span>
-
-              {/* 3단계 화면 레이아웃 스위치 (좌측 최대 / 일반 5:5 / 우측 최대) */}
-              <div className="flex items-center bg-[#252525] p-0.5 rounded-lg border border-[#333] ml-2">
-                <button
-                  onClick={() => setSplitRatio(75)}
-                  className={`h-6 px-2.5 rounded text-[10px] font-bold transition flex items-center gap-1 ${splitRatio >= 70 ? "bg-[#facc15] text-black shadow" : "text-[#888] hover:text-white"}`}
-                  title="좌측 편집창을 75%로 크게 확대"
-                >
-                  <span>◀</span> 좌측 최대
-                </button>
-                <button
-                  onClick={() => setSplitRatio(50)}
-                  className={`h-6 px-2.5 rounded text-[10px] font-bold transition ${splitRatio > 35 && splitRatio < 70 ? "bg-[#facc15] text-black shadow" : "text-[#888] hover:text-white"}`}
-                  title="좌측과 우측을 정확히 반반(5:5) 균등 분할"
-                >
-                  일반 (5:5)
-                </button>
-                <button
-                  onClick={() => setSplitRatio(25)}
-                  className={`h-6 px-2.5 rounded text-[10px] font-bold transition flex items-center gap-1 ${splitRatio <= 35 ? "bg-[#facc15] text-black shadow" : "text-[#888] hover:text-white"}`}
-                  title="우측 프리뷰 모니터를 75%로 크게 확대"
-                >
-                  우측 최대 <span>▶</span>
-                </button>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <button onClick={() => setIsVertical(!isVertical)} className={`h-7 px-3 rounded border text-[11px] font-bold ${isVertical ? "bg-[#facc15] text-black border-[#facc15]" : "bg-[#252525] border-[#3a3a3a] text-[#aaa]"}`}>
-                {isVertical ? "9:16 쇼츠" : "16:9 와이드"}
-              </button>
-
-              <button onClick={() => setIsSwapped(!isSwapped)} className="h-7 px-3 rounded bg-[#a78bfa]/20 border border-[#a78bfa]/40 text-[#c4b5fd] font-bold hover:bg-[#a78bfa]/30 text-[11px]">
-                🔄 화면 맞교환 ({isSwapped ? "스왑 ON" : "스왑 OFF"})
-              </button>
-
-              {!isRecording ? (
-                <button onClick={startRecording} className="h-7 px-3.5 rounded bg-[#ef4444] hover:bg-[#dc2626] text-white font-bold shadow text-[11px] flex items-center gap-1">
-                  <span>🔴</span> 녹화 시작
-                </button>
-              ) : (
-                <button onClick={stopRecordingAndSave} className="h-7 px-3.5 rounded bg-[#facc15] hover:bg-[#eab308] text-black font-bold shadow text-[11px] flex items-center gap-1 animate-pulse">
-                  <span>⏹</span> 중지 & 지금 위치까지 MP4 저장
-                </button>
-              )}
-            </div>
-          </header>
-
-          {toastMsg && (
-            <div className="bg-[#10b981]/20 border-b border-[#10b981]/30 text-[#10b981] text-[11px] py-1 px-4 flex items-center gap-2">
-              <span>✓</span><span>{toastMsg}</span>
-            </div>
-          )}
-
-          {/* 메인 분할 컨테이너 */}
-          <div ref={containerRef} className="flex-1 flex min-h-0 relative select-none">
-            {/* 좌측 패널 (splitRatio % 비율 적용) */}
-            <aside
-              className="bg-[#171717] flex flex-col overflow-hidden"
-              style={{ width: `${splitRatio}%` }}
-            >
-              <div className="h-[36px] shrink-0 flex items-center justify-between px-3 bg-[#1e1e1e] border-b border-[#2a2a2a]">
-                <span className="text-[11px] font-bold text-[#aaa]">편집 설정 패널 ({splitRatio.toFixed(0)}%)</span>
-                <span className="text-[9px] text-[#666]">중앙 분할 바를 드래그해서 자유 조절</span>
-              </div>
-
-              <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-3">
-                {/* 1. 이미지 트랙 관리 */}
-                <div className="rounded-xl bg-[#1e1e1e] border border-[#2a2a2a] p-2.5">
-                  <div className="flex justify-between items-center mb-2">
-                    <h3 className="text-[12px] font-bold text-[#fbbf24]">1. 이미지 트랙 ({images.length}/{MAX_IMAGES})</h3>
-                    <div className="flex gap-1">
-                      {images.length > 0 && (
-                        <button onClick={() => setImages([])} className="h-6 px-2 rounded bg-[#251a1a] border border-[#ef4444]/30 text-[#ef8888] text-[10px]">
-                          비우기
-                        </button>
-                      )}
-                      <label className="h-6 px-2.5 rounded bg-[#fbbf24] text-black font-bold flex items-center cursor-pointer hover:bg-[#eab308] text-[10px]">
-                        + 사진 추가
-                        <input type="file" accept="image/*" multiple className="hidden" onChange={(e) => { handleImageFiles(e.target.files); e.target.value = ""; }} />
-                      </label>
-                    </div>
-                  </div>
-
-                  <div className="bg-[#151310] border border-[#fbbf24]/20 rounded-lg p-2 mb-2">
-                    <div className="grid grid-cols-2 gap-1 mb-2">
-                      <button onClick={() => setDurationMode("fit")} className={`py-1 rounded text-[10px] font-bold border ${durationMode === "fit" ? "bg-[#fbbf24] text-black border-[#fbbf24]" : "bg-[#222] border-[#333] text-[#777]"}`}>
-                        전체길이 균등분배
-                      </button>
-                      <button onClick={() => setDurationMode("loop")} className={`py-1 rounded text-[10px] font-bold border ${durationMode === "loop" ? "bg-[#fbbf24] text-black border-[#fbbf24]" : "bg-[#222] border-[#333] text-[#777]"}`}>
-                        고정초 무한루프
-                      </button>
-                    </div>
-
-                    {durationMode === "fit" ? (
-                      <div className="text-[10px] text-[#aaa]">
-                        총 {totalDuration.toFixed(1)}초 ÷ {images.length || 1}장 = 장당 <span className="text-[#10b981] font-bold">{(totalDuration / Math.max(1, images.length)).toFixed(1)}초</span> 노출
-                      </div>
-                    ) : (
-                      <div className="flex items-center gap-2">
-                        <span className="text-[10px] text-[#888]">사진당</span>
-                        <input type="range" min="1" max="15" step="0.5" value={fixedPerSec} onChange={(e) => setFixedPerSec(parseFloat(e.target.value))} className="flex-1 accent-[#fbbf24] h-1" />
-                        <span className="text-[10px] font-mono text-[#fbbf24]">{fixedPerSec.toFixed(1)}s</span>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* 패널 넓이에 따라 3~6열 유동 자동 조절되는 썸네일 그리드 */}
-                  <div
-                    className="grid gap-1.5 max-h-[260px] overflow-auto pr-1"
-                    style={{ gridTemplateColumns: `repeat(${splitRatio >= 60 ? 5 : splitRatio >= 40 ? 4 : 3}, minmax(0, 1fr))` }}
-                  >
-                    {images.map((img, idx) => (
-                      <div
-                        key={img.id}
-                        draggable
-                        onDragStart={() => onDragStart(idx)}
-                        onDragOver={onDragOver}
-                        onDrop={() => onDrop(idx)}
-                        className="group relative rounded bg-[#111] border border-[#333] aspect-[4/3] overflow-hidden cursor-move hover:border-[#fbbf24] transition"
-                      >
-                        <img src={img.url} className="w-full h-full object-cover" />
-                        <div className="absolute top-1 left-1 px-1 rounded bg-black/70 text-[8px] text-white font-mono">{idx + 1}</div>
-                        <div className="absolute bottom-1 left-1 px-1 rounded bg-[#fbbf24] text-black text-[7px] font-bold">
-                          {(img.duration || fixedPerSec).toFixed(1)}s
-                        </div>
-                        <button
-                          onClick={() => setImages(prev => prev.filter(item => item.id !== img.id))}
-                          className="absolute top-1 right-1 w-4 h-4 rounded-full bg-[#ef4444] text-white text-[8px] opacity-0 group-hover:opacity-100 flex items-center justify-center"
-                        >
-                          ✕
-                        </button>
-                      </div>
-                    ))}
-                    {images.length === 0 && (
-                      <div className="col-span-full py-8 text-center text-[11px] text-[#555] border-2 border-dashed border-[#2a2a2a] rounded">
-                        등록된 이미지가 없습니다.<br/>[+ 사진 추가] 버튼을 눌러 이미지를 넣으세요.
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* 2. PIP 비디오/스틸 */}
-                <div className="rounded-xl bg-[#1a1625] border border-[#a78bfa]/20 p-2.5">
-                  <div className="flex justify-between items-center mb-2">
-                    <span className="text-[11px] font-bold text-[#c4b5fd]">2. PIP 미디어 (동영상 / 스틸)</span>
-                    <label className="h-6 px-2 rounded bg-[#231e33] border border-[#a78bfa]/40 text-[#c4b5fd] text-[10px] flex items-center cursor-pointer hover:bg-[#2e2644]">
-                      + PIP 선택
-                      <input type="file" accept="video/*,image/*" className="hidden" onChange={(e) => { handlePipFile(e.target.files); e.target.value = ""; }} />
-                    </label>
-                  </div>
-                  {pipMedia ? (
-                    <div className="rounded bg-[#231e33] border border-[#a78bfa]/30 p-2 flex items-center justify-between">
-                      <div className="truncate flex-1">
-                        <div className="text-[11px] text-[#e5e5e5] truncate">{pipMedia.name}</div>
-                        <div className="text-[9px] text-[#a78bfa]">{pipMedia.kind.toUpperCase()} • {(pipMedia.duration || 0).toFixed(1)}s</div>
-                      </div>
-                      <button onClick={() => setPipMedia(null)} className="w-5 h-5 rounded bg-[#2a2a2a] text-[10px]">✕</button>
-                    </div>
-                  ) : (
-                    <div className="text-[10px] text-[#6d5aa8] py-2 text-center border border-dashed border-[#a78bfa]/30 rounded">
-                      PIP 동영상/사진 없음 (우하단 배치)
-                    </div>
-                  )}
-
-                  <div className="mt-2 grid grid-cols-2 gap-1.5">
-                    <div className="bg-[#18151f] border border-[#2a2a2a] rounded p-1.5">
-                      <span className="text-[9px] text-[#888]">위치</span>
-                      <select value={pipPos} onChange={(e) => setPipPos(e.target.value)} className="w-full h-6 rounded bg-[#222] border border-[#333] text-[10px] mt-0.5">
-                        <option>우하단</option><option>좌하단</option><option>우상단</option><option>좌상단</option><option>중앙</option>
-                      </select>
-                    </div>
-                    <div className="bg-[#18151f] border border-[#2a2a2a] rounded p-1.5">
-                      <span className="text-[9px] text-[#888]">크기</span>
-                      <select value={pipSize} onChange={(e) => setPipSize(parseInt(e.target.value))} className="w-full h-6 rounded bg-[#222] border border-[#333] text-[10px] mt-0.5">
-                        <option value={20}>20%</option><option value={25}>25%</option><option value={30}>30%</option><option value={35}>35%</option>
-                      </select>
-                    </div>
-                  </div>
-                </div>
-
-                {/* 3. 배경 오디오 */}
-                <div className="rounded-xl bg-[#0f1a15] border border-[#10b981]/30 p-2.5">
-                  <div className="flex justify-between items-center mb-1.5">
-                    <span className="text-[11px] font-bold text-[#6bb89a]">3. 배경 오디오 (MP3)</span>
-                    <label className="h-6 px-2 rounded bg-[#123123] border border-[#10b981]/40 text-[#10b981] text-[10px] flex items-center cursor-pointer hover:bg-[#1a4430]">
-                      + MP3 선택
-                      <input type="file" accept="audio/*" className="hidden" onChange={(e) => { handleAudioFile(e.target.files); e.target.value = ""; }} />
-                    </label>
-                  </div>
-                  {audio ? (
-                    <div className="flex items-center justify-between text-[11px] text-[#6bb89a]">
-                      <span className="truncate">{audio.name} ({audio.duration.toFixed(1)}s)</span>
-                      <button onClick={() => setAudio(null)} className="w-5 h-5 rounded bg-[#222] text-[10px]">✕</button>
-                    </div>
-                  ) : (
-                    <div className="text-[10px] text-[#6bb89a]/50">오디오 등록 시 전체 길이가 자동 동기화됩니다.</div>
-                  )}
-                </div>
-              </div>
-            </aside>
-
-            {/* 정중앙 마우스 드래그 분할 바 (◁ ▷) */}
-            <div
-              onMouseDown={() => setIsResizing(true)}
-              className={`w-[10px] shrink-0 bg-[#1e1e1e] border-x border-[#2a2a2a] hover:bg-[#fbbf24] cursor-col-resize flex flex-col items-center justify-center gap-1 transition-colors relative z-20 ${isResizing ? "bg-[#fbbf24]" : ""}`}
-              title="마우스로 잡고 좌우로 끌면 분할 비율 조절"
-            >
-              <div className="w-[2px] h-4 bg-[#555] rounded"></div>
-              <span className="text-[8px] text-[#888] select-none font-bold">◁▷</span>
-              <div className="w-[2px] h-4 bg-[#555] rounded"></div>
-            </div>
-
-            {/* 우측 프리뷰 모니터 & 타임라인 영역 */}
-            <section
-              className="flex flex-col min-w-0 bg-[#0f0f0f]"
-              style={{ width: `${100 - splitRatio}%` }}
-            >
-              <div className="h-[36px] shrink-0 flex items-center justify-between px-3 bg-[#181818] border-b border-[#2a2a2a]">
-                <div className="flex items-center gap-2">
-                  <span className="px-1.5 py-0.5 rounded bg-[#333] text-[#aaa] text-[9px] font-bold">PREVIEW</span>
-                  <span className="font-mono text-[#facc15] font-bold">{currentTime.toFixed(2)}s / {totalDuration.toFixed(1)}s</span>
-                  {isRecording && <span className="px-1.5 py-0.5 rounded bg-[#ef4444] text-white font-bold text-[9px] animate-pulse">REC ON</span>}
-                </div>
-                <div className="text-[10px] text-[#777]">캔버스 더블클릭 시 메인 ↔ PIP 화면 교환</div>
-              </div>
-
-              {/* 캔버스 화면 디스플레이 */}
-              <div
-                className="flex-1 bg-black flex items-center justify-center relative overflow-hidden cursor-pointer"
-                onDoubleClick={() => setIsSwapped(!isSwapped)}
-              >
-                <canvas
-                  ref={canvasRef}
-                  width={canvasW}
-                  height={canvasH}
-                  className="max-w-full max-h-full object-contain"
-                  style={{ aspectRatio: isVertical ? "9/16" : "16/9" }}
-                />
-              </div>
-
-              {/* 플레이어 조작 바 */}
-              <div className="h-[46px] shrink-0 flex items-center gap-3 px-4 bg-[#1a1a1a] border-y border-[#2a2a2a]">
-                <button onClick={() => setIsPlaying(!isPlaying)} className="h-7 px-4 rounded-full bg-white text-black font-bold hover:bg-[#ddd]">
-                  {isPlaying ? "⏸ 정지" : "▶ 재생"}
-                </button>
-                <input
-                  type="range"
-                  min="0"
-                  max={totalDuration}
-                  step="0.05"
-                  value={currentTime}
-                  onChange={(e) => setCurrentTime(parseFloat(e.target.value))}
-                  className="flex-1 accent-[#facc15] h-1"
-                />
-                <span className="font-mono text-[11px] text-[#aaa] w-12 text-right">{currentTime.toFixed(1)}s</span>
-              </div>
-
-              {/* 하단 타임라인 */}
-              <div className="h-[120px] shrink-0 bg-[#121212] p-2 flex flex-col gap-1.5 border-t border-[#2a2a2a]">
-                {/* V1 이미지 트랙 */}
-                <div className="flex-1 bg-[#1a1a1a] rounded border border-[#2a2a2a] p-1 flex items-center gap-1 overflow-x-auto">
-                  <div className="px-1 text-[9px] font-bold text-[#fbbf24] shrink-0">V1 STILL</div>
-                  {images.map((img, idx) => (
-                    <div
-                      key={img.id}
-                      className={`h-full min-w-[70px] rounded border p-1 flex flex-col justify-between overflow-hidden relative ${currentActiveImage?.img.id === img.id ? "border-[#facc15] bg-[#2a2415]" : "border-[#333] bg-[#1f1f1f]"}`}
-                    >
-                      <img src={img.url} className="absolute inset-0 w-full h-full object-cover opacity-20" />
-                      <span className="text-[8px] font-bold relative z-10 truncate">{idx + 1}. {img.name}</span>
-                      <span className="text-[7px] text-[#fbbf24] font-mono relative z-10">{(img.duration || fixedPerSec).toFixed(1)}s</span>
-                    </div>
-                  ))}
-                  {images.length === 0 && <span className="text-[10px] text-[#555] px-2">등록된 이미지 클립 없음</span>}
-                </div>
-
-                {/* V2 PIP 트랙 */}
-                <div className="h-[32px] bg-[#1a1620] rounded border border-[#a78bfa]/20 p-1 flex items-center px-2">
-                  <span className="text-[9px] font-bold text-[#c4b5fd] mr-2 shrink-0">V2 PIP</span>
-                  <div className="flex-1 h-full bg-[#231e33] rounded border border-[#a78bfa]/40 flex items-center px-2 text-[10px] text-[#a78bfa] truncate">
-                    {pipMedia ? `${pipMedia.name} (${pipMedia.kind}) • ${isSwapped ? "대화면 송출 중" : "PIP 서브 송출 중"}` : "등록된 PIP 미디어 없음"}
-                  </div>
-                </div>
-
-                {/* 오디오 트랙 */}
-                <div className="h-[24px] bg-[#0f1a15] rounded border border-[#10b981]/20 p-1 flex items-center px-2 text-[9px] text-[#6bb89a]">
-                  <span className="font-bold mr-2 shrink-0">AUDIO</span>
-                  <span className="truncate">{audio ? `${audio.name} (${audio.duration.toFixed(1)}초)` : "배경 음악 없음"}</span>
-                </div>
-              </div>
-            </section>
-          </div>
-        </div>
-      );
+    .workspace { flex: 1; display: flex; min-height: 0; }
+    .sidebar {
+      width: 420px;
+      background: var(--panel);
+      border-right: 1px solid var(--border);
+      padding: 14px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .card {
+      background: #141619;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px;
+    }
+    .card-title {
+      font-size: 13px;
+      font-weight: 700;
+      margin-bottom: 8px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .step-num {
+      display: inline-block;
+      width: 20px; height: 20px;
+      background: #2a2e35;
+      color: var(--accent);
+      border-radius: 50%;
+      text-align: center;
+      line-height: 20px;
+      font-size: 11px;
+      margin-right: 6px;
+    }
+    .file-btn {
+      display: block;
+      width: 100%;
+      padding: 9px;
+      border: 1px dashed #424852;
+      border-radius: 8px;
+      text-align: center;
+      font-size: 12px;
+      color: var(--muted);
+      cursor: pointer;
+      background: #191c20;
+      transition: 0.15s;
+    }
+    .file-btn:hover { border-color: var(--accent); color: var(--text); }
+    input[type="file"] { display: none; }
+    input[type="text"] {
+      width: 100%;
+      background: #1e2228;
+      border: 1px solid #353a42;
+      color: var(--text);
+      padding: 7px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      margin-top: 6px;
+    }
+    input[type="text"]:focus { outline: none; border-color: var(--accent); }
+    .file-info {
+      margin-top: 8px;
+      font-size: 12px;
+      color: var(--green);
+      background: rgba(16, 185, 129, 0.1);
+      padding: 6px 10px;
+      border-radius: 6px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .rule-box {
+      margin-top: 8px;
+      background: #191c21;
+      border: 1px solid #282c34;
+      border-radius: 6px;
+      padding: 8px 10px;
+      font-size: 11px;
+      color: var(--muted);
+      line-height: 1.55;
+    }
+    .rule-box b { color: var(--accent); }
+    .check-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      margin-top: 6px;
+      cursor: pointer;
     }
 
-    ReactDOM.createRoot(document.getElementById("root")).render(<TazzangPremier />);
-  </script>
+    /* 드래그 앤 드롭 스틸 리스트 */
+    .still-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-top: 8px;
+      max-height: 240px;
+      overflow-y: auto;
+      padding-right: 4px;
+    }
+    .still-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: #1b1e23;
+      border: 1px solid #2d323a;
+      border-radius: 8px;
+      padding: 6px 8px;
+      cursor: grab;
+      transition: 0.12s;
+    }
+    .still-item:active { cursor: grabbing; }
+    .still-item.dragging { opacity: 0.4; border-color: var(--accent); }
+    .still-item.drag-over { border-top: 2px solid var(--accent); background: #252930; }
+    .still-idx {
+      width: 20px; height: 20px;
+      background: #2b3038;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 800;
+      display: flex; align-items: center; justify-content: center;
+      color: var(--accent);
+      flex-shrink: 0;
+    }
+    .still-thumb {
+      width: 50px; height: 34px;
+      border-radius: 4px;
+      object-fit: cover;
+      background: #000;
+      flex-shrink: 0;
+    }
+    .still-meta { flex: 1; min-width: 0; }
+    .still-name { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .still-tag { font-size: 10px; color: var(--muted); margin-top: 2px; }
+    .still-del {
+      background: #282c34; border: none; color: #aaa;
+      width: 24px; height: 24px; padding: 0; border-radius: 4px;
+    }
+    .still-del:hover { background: var(--red); color: #fff; }
+
+    /* 우측 프리뷰 & 타임라인 */
+    .main-area {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      padding: 20px;
+      gap: 14px;
+      align-items: center;
+      justify-content: center;
+      background: #0b0c0e;
+    }
+    .canvas-wrap {
+      flex: 1;
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 0;
+      position: relative;
+    }
+    canvas {
+      max-width: 100%;
+      max-height: 100%;
+      background: #000;
+      border: 1px solid #2a2d34;
+      border-radius: 8px;
+      box-shadow: 0 12px 32px rgba(0,0,0,0.6);
+    }
+    .status-pill {
+      position: absolute;
+      top: 12px; left: 16px;
+      background: rgba(0,0,0,0.78);
+      border: 1px solid rgba(255,255,255,0.14);
+      padding: 5px 12px;
+      border-radius: 99px;
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--accent);
+      pointer-events: none;
+    }
+
+    .player-bar {
+      width: 100%;
+      max-width: 960px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .timeline-visual {
+      height: 28px;
+      background: #121417;
+      border-radius: 6px;
+      display: flex;
+      overflow: hidden;
+      font-size: 10px;
+      font-weight: 800;
+      color: #000;
+      position: relative;
+      border: 1px solid #2c3036;
+    }
+    .seg-block {
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      white-space: nowrap;
+      border-right: 1px solid rgba(0,0,0,0.28);
+      padding: 0 3px;
+    }
+    .seg-still { background: var(--accent); color: #000; }
+    .seg-video { background: var(--blue); color: #000; }
+    .seg-outro { background: var(--purple); color: #000; }
+    .playhead-line {
+      position: absolute;
+      top: 0; bottom: 0;
+      width: 2px;
+      background: #fff;
+      box-shadow: 0 0 6px #000;
+      pointer-events: none;
+    }
+
+    .scrubber-row { display: flex; align-items: center; gap: 12px; }
+    input[type="range"] { flex: 1; accent-color: var(--accent); cursor: pointer; }
+    .time-text { font-family: monospace; font-size: 12px; color: var(--muted); min-width: 115px; text-align: right; }
+
+    /* 렌더링 모달 */
+    .modal {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.82);
+      display: none; align-items: center; justify-content: center; z-index: 50;
+    }
+    .modal.active { display: flex; }
+    .modal-box {
+      background: var(--panel); border: 1px solid var(--border);
+      padding: 24px; border-radius: 12px; width: 420px; text-align: center;
+    }
+    .progress-bar {
+      width: 100%; height: 10px; background: #111;
+      border-radius: 99px; overflow: hidden; margin: 16px 0;
+    }
+    .progress-fill { height: 100%; width: 0%; background: var(--accent); transition: width 0.2s; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <span class="badge">KINOCINE v3</span>
+    <span>균등 분산 & 구독·좋아요 리뷰 영상 제작기</span>
+  </div>
+  <div class="controls-top">
+    <button id="btnRatio">화면비: 16:9 가로 (1920×1080)</button>
+    <button id="btnExport" class="export">🎬 동영상 내보내기</button>
+  </div>
+</header>
+
+<div class="workspace">
+  <!-- 좌측 설정 패널 -->
+  <aside class="sidebar">
+    <!-- 1. 오디오 -->
+    <div class="card">
+      <div class="card-title"><span><span class="step-num">1</span>나레이션 오디오 (WAV/MP3)</span></div>
+      <label class="file-btn">
+        + 에이스튜디오 WAV 파일 선택
+        <input type="file" id="inAudio" accept="audio/*" />
+      </label>
+      <div id="audioInfo" class="file-info" style="display:none;"></div>
+    </div>
+
+    <!-- 2. 메인 동영상 -->
+    <div class="card">
+      <div class="card-title"><span><span class="step-num">2</span>반복할 영화 클립 (자동 무음)</span></div>
+      <label class="file-btn">
+        + 영화 동영상 파일 선택 (클립 사이 스틸 자동 배치)
+        <input type="file" id="inVideo" accept="video/*" />
+      </label>
+      <div id="videoInfo" class="file-info" style="display:none;"></div>
+    </div>
+
+    <!-- 3. 스틸 통합 관리 -->
+    <div class="card">
+      <div class="card-title">
+        <span><span class="step-num">3</span>영화 스틸 목록 (드래그 순서 변경)</span>
+        <button id="btnClearStills" style="padding:3px 8px; font-size:11px;">전체삭제</button>
+      </div>
+      <label class="file-btn">
+        + 영화 스틸 여러 장 추가
+        <input type="file" id="inStills" accept="image/*" multiple />
+      </label>
+      <div class="rule-box">
+        • <b>시작 스틸(기본 5초)</b> ↔ 동영상 ↔ <b>중간 스틸(기본 3~4초)</b> 교차<br/>
+        • <b>남은 시간 균등 분산:</b> 뒤에 몰리지 않고 본편 스틸 전체에 고르게 배분<br/>
+        • <b>마지막 5초:</b> 엔딩 스틸 + 구독·좋아요 배너 자동 표시
+      </div>
+      <div class="still-list" id="stillList"></div>
+    </div>
+
+    <!-- 4. 엔딩 배너 & 자막 오버레이 -->
+    <div class="card">
+      <div class="card-title"><span><span class="step-num">4</span>구독·좋아요 배너 & 자막 오버레이</span></div>
+      <label class="check-row">
+        <input type="checkbox" id="chkSubscribeBadge" checked />
+        <span>엔딩 5초 구간에 <b>[구독 · 좋아요 · 알림]</b> 배너 표시</span>
+      </label>
+      <label class="file-btn" style="margin-top:8px; padding:7px;">
+        + (선택) 커스텀 구독/좋아요 투명 PNG 이미지 올리기
+        <input type="file" id="inOverlayPng" accept="image/*" />
+      </label>
+      <div id="overlayPngInfo" class="file-info" style="display:none;"></div>
+
+      <div style="margin-top:10px; font-size:11px; color:var(--muted);">상시 하단 워터마크/제목 자막 (비워두면 숨김)</div>
+      <input type="text" id="txtWatermark" placeholder="예: 박재환영화리뷰 | KinoCine" />
+
+      <div style="margin-top:8px; font-size:11px; color:var(--muted);">엔딩 5초 안내 문구</div>
+      <input type="text" id="txtEndingCaption" value="영상이 유익하셨다면 구독과 좋아요 부탁드립니다!" />
+    </div>
+  </aside>
+
+  <!-- 우측 프리뷰 & 타임라인 -->
+  <main class="main-area">
+    <div class="canvas-wrap">
+      <div class="status-pill" id="segmentBadge">대기 중</div>
+      <canvas id="previewCanvas" width="1920" height="1080"></canvas>
+    </div>
+
+    <div class="player-bar">
+      <div class="timeline-visual" id="timelineBar"></div>
+      <div class="scrubber-row">
+        <button id="btnPlay" class="primary">▶ 재생</button>
+        <input type="range" id="scrubber" min="0" max="10" step="0.02" value="0" />
+        <span class="time-text" id="timeDisplay">00:00.0 / 00:00.0</span>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- 내보내기 진행 모달 -->
+<div class="modal" id="exportModal">
+  <div class="modal-box">
+    <h3 style="margin-bottom:8px;">동영상 생성 중...</h3>
+    <p style="font-size:12px; color:var(--muted);">오디오와 영상을 실시간으로 합성하고 있습니다. 창을 닫지 마세요.</p>
+    <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+    <button id="btnCancelExport">취소</button>
+  </div>
+</div>
+
+<video id="hiddenVideo" muted playsinline crossOrigin="anonymous" style="display:none;"></video>
+<audio id="hiddenAudio" crossOrigin="anonymous" style="display:none;"></audio>
+
+<script>
+  const state = {
+    isVertical: false,
+    width: 1920,
+    height: 1080,
+    audio: null,        // { url, duration, name }
+    video: null,        // { url, duration, name }
+    stills: [],         // [{ id, name, url, img }]
+    overlayImg: null,   // 커스텀 구독/좋아요 PNG Image 객체
+    showSubBadge: true,
+    watermarkText: '',
+    endingText: '영상이 유익하셨다면 구독과 좋아요 부탁드립니다!',
+    segments: [],
+    totalDuration: 0,
+    isPlaying: false,
+    currentTime: 0,
+    isExporting: false,
+    dragIdx: null
+  };
+
+  const canvas = document.getElementById('previewCanvas');
+  const ctx = canvas.getContext('2d');
+  const hiddenVideo = document.getElementById('hiddenVideo');
+  const hiddenAudio = document.getElementById('hiddenAudio');
+  const scrubber = document.getElementById('scrubber');
+  const timeDisplay = document.getElementById('timeDisplay');
+  const btnPlay = document.getElementById('btnPlay');
+  const segmentBadge = document.getElementById('segmentBadge');
+
+  // 균등 분산 타임라인 설계 엔진
+  function buildSchedule() {
+    const segs = [];
+    const hasStills = state.stills.length > 0;
+    const hasVideo = !!state.video && state.video.duration > 0;
+    const vDur = hasVideo ? state.video.duration : 0;
+
+    let targetTotal = state.audio ? state.audio.duration : (hasVideo ? Math.max(25, vDur * 2 + 16) : 15);
+    if (targetTotal < 5) targetTotal = 5;
+
+    if (!hasStills && !hasVideo) {
+      state.segments = [];
+      state.totalDuration = targetTotal;
+      renderTimelineBar();
+      return;
+    }
+
+    if (!hasStills && hasVideo) {
+      let cur = 0;
+      while (cur < targetTotal - 0.05) {
+        const dur = Math.min(vDur, targetTotal - cur);
+        segs.push({ type: 'video', start: cur, end: cur + dur, duration: dur, label: '동영상' });
+        cur += dur;
+      }
+      state.segments = segs;
+      state.totalDuration = targetTotal;
+      renderTimelineBar();
+      return;
+    }
+
+    // 1. 엔딩 5초 확보 & 본편 시간 계산
+    const outroDur = Math.min(5, targetTotal);
+    const bodyTotal = Math.max(0, targetTotal - outroDur);
+
+    // 2. 본편에 들어갈 동영상 반복 횟수 및 스틸 기본 슬롯 결정
+    // 패턴: [S0(5s)] -> [V] -> [S1(4s)] -> [V] -> [S2(3s)] -> [V] ...
+    // 단, 각 동영상 앞에는 반드시 스틸이 1개씩 배치되어 동영상과 동영상 사이를 최소 3초 이상 띄움
+    let numVideos = 0;
+    let baseStillDurs = []; // 본편에 배치될 각 스틸의 기본 시간 배열
+
+    if (!hasVideo || bodyTotal < 5 + vDur) {
+      // 동영상을 1번도 넣을 수 없을 만큼 짧거나 동영상이 없는 경우
+      numVideos = 0;
+      const count = Math.max(1, Math.round(bodyTotal / 4));
+      for (let i = 0; i < count; i++) {
+        baseStillDurs.push(i === 0 ? 5 : (i === 1 ? 4 : 3));
+      }
+    } else {
+      // 동영상을 몇 번 반복할 수 있는지 시뮬레이션
+      let used = 0;
+      let k = 0;
+      while (true) {
+        const sBase = k === 0 ? 5 : (k === 1 ? 4 : 3);
+        if (used + sBase + vDur <= bodyTotal + 0.05) {
+          baseStillDurs.push(sBase);
+          used += sBase + vDur;
+          numVideos++;
+          k++;
+        } else {
+          break;
+        }
+      }
+      // 마지막 동영상 뒤에 한 번 더 본편 스틸을 넣을 여유(3초 이상)가 있다면 슬롯 추가
+      if (bodyTotal - used >= 3) {
+        baseStillDurs.push(3);
+      }
+    }
+
+    // 3. 핵심: 남은 시간을 본편의 모든 스틸 슬롯에 균등 분산 배분!
+    const totalVideoTime = numVideos * vDur;
+    const totalBaseStillTime = baseStillDurs.reduce((a, b) => a + b, 0);
+    const leftover = Math.max(0, bodyTotal - totalVideoTime - totalBaseStillTime);
+    const extraPerStill = baseStillDurs.length > 0 ? leftover / baseStillDurs.length : 0;
+
+    // 4. 실제 세그먼트 조립
+    let cur = 0;
+    let stillCursor = 0;
+
+    for (let i = 0; i < baseStillDurs.length; i++) {
+      const dur = baseStillDurs[i] + extraPerStill;
+      const sIdx = stillCursor % state.stills.length;
+      if (dur > 0.05) {
+        segs.push({
+          type: 'still',
+          stillIndex: sIdx,
+          start: cur,
+          end: cur + dur,
+          duration: dur,
+          label: `스틸#${sIdx + 1} (${dur.toFixed(1)}s)`
+        });
+        cur += dur;
+        stillCursor++;
+      }
+
+      if (i < numVideos) {
+        segs.push({
+          type: 'video',
+          start: cur,
+          end: cur + vDur,
+          duration: vDur,
+          label: `영상 (${vDur.toFixed(1)}s)`
+        });
+        cur += vDur;
+      }
+    }
+
+    // 5. 엔딩 5초 스틸 배치
+    if (outroDur > 0.05) {
+      let outroStillIdx = state.stills.length > 1
+        ? state.stills.length - 1
+        : (stillCursor % state.stills.length);
+
+      if (state.stills.length > 1 && segs.length > 0 && segs[segs.length - 1].type === 'still' && segs[segs.length - 1].stillIndex === outroStillIdx) {
+        outroStillIdx = (outroStillIdx + 1) % state.stills.length;
+      }
+
+      segs.push({
+        type: 'outro',
+        stillIndex: outroStillIdx,
+        start: cur,
+        end: targetTotal,
+        duration: targetTotal - cur,
+        label: `엔딩 스틸#${outroStillIdx + 1} (${(targetTotal - cur).toFixed(1)}s)`
+      });
+    }
+
+    state.segments = segs;
+    state.totalDuration = targetTotal;
+    renderTimelineBar();
+  }
+
+  function renderTimelineBar() {
+    const bar = document.getElementById('timelineBar');
+    bar.innerHTML = '';
+    const total = state.totalDuration || 1;
+
+    state.segments.forEach(seg => {
+      const div = document.createElement('div');
+      div.className = `seg-block seg-${seg.type}`;
+      div.style.width = `${(seg.duration / total) * 100}%`;
+      div.title = seg.label;
+      div.textContent = seg.label;
+      bar.appendChild(div);
+    });
+
+    const line = document.createElement('div');
+    line.className = 'playhead-line';
+    line.id = 'playheadLine';
+    line.style.left = `${(state.currentTime / total) * 100}%`;
+    bar.appendChild(line);
+
+    scrubber.max = total.toFixed(2);
+    updateTimeText();
+  }
+
+  function formatTime(sec) {
+    const m = Math.floor(sec / 60).toString().padStart(2, '0');
+    const s = (sec % 60).toFixed(1).padStart(4, '0');
+    return `${m}:${s}`;
+  }
+
+  function updateTimeText() {
+    const total = state.totalDuration || 0;
+    timeDisplay.textContent = `${formatTime(state.currentTime)} / ${formatTime(total)}`;
+    scrubber.value = state.currentTime;
+    const line = document.getElementById('playheadLine');
+    if (line && total > 0) {
+      line.style.left = `${Math.min(100, (state.currentTime / total) * 100)}%`;
+    }
+  }
+
+  function getCurrentSegment(t) {
+    if (state.segments.length === 0) return null;
+    for (let i = 0; i < state.segments.length; i++) {
+      const s = state.segments[i];
+      if (t >= s.start && t < s.end) return s;
+    }
+    return state.segments[state.segments.length - 1];
+  }
+
+  function drawStill(img, progress) {
+    const cw = state.width, ch = state.height;
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, cw, ch);
+    if (!img || !img.complete) return;
+
+    ctx.save();
+    ctx.filter = 'blur(24px) brightness(0.45)';
+    ctx.drawImage(img, -20, -20, cw + 40, ch + 40);
+    ctx.restore();
+
+    const scaleZoom = 1 + Math.min(1, Math.max(0, progress)) * 0.05;
+    const imgRatio = img.naturalWidth / img.naturalHeight;
+    const canRatio = cw / ch;
+    let drawW, drawH;
+
+    if (imgRatio > canRatio) {
+      drawW = cw * scaleZoom;
+      drawH = drawW / imgRatio;
+    } else {
+      drawH = ch * scaleZoom;
+      drawW = drawH * imgRatio;
+    }
+    ctx.drawImage(img, (cw - drawW) / 2, (ch - drawH) / 2, drawW, drawH);
+  }
+
+  // 구독 & 좋아요 & 자막 오버레이 렌더링
+  function drawOverlays(seg) {
+    const cw = state.width, ch = state.height;
+    const isVertical = state.isVertical;
+
+    // 1. 상시 워터마크/제목 자막 (좌측 상단 또는 하단)
+    if (state.watermarkText.trim()) {
+      ctx.save();
+      const fontSize = isVertical ? 28 : 26;
+      ctx.font = `700 ${fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+      const text = state.watermarkText.trim();
+      const padX = 20, padY = 12;
+      const tw = ctx.measureText(text).width;
+      const bx = 36, by = 36;
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.58)';
+      ctx.beginPath();
+      ctx.roundRect(bx, by, tw + padX * 2, fontSize + padY * 2, 8);
+      ctx.fill();
+
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = 'left';
+      ctx.fillText(text, bx + padX, by + (fontSize + padY * 2) / 2);
+      ctx.restore();
+    }
+
+    // 2. 엔딩 5초 구간 오버레이 (구독·좋아요 배너 + 엔딩 자막)
+    if (seg && seg.type === 'outro') {
+      const localT = Math.max(0, state.currentTime - seg.start);
+      // 부드러운 페이드인/팝업 효과 (0 ~ 0.4초)
+      const alpha = Math.min(1, localT / 0.4);
+      const slideUp = (1 - alpha) * 24;
+
+      ctx.save();
+      ctx.globalAlpha = alpha;
+
+      // 커스텀 PNG가 있으면 이미지 그리기
+      if (state.overlayImg && state.overlayImg.complete) {
+        const maxW = cw * (isVertical ? 0.75 : 0.45);
+        const ratio = state.overlayImg.naturalWidth / state.overlayImg.naturalHeight;
+        const ow = maxW;
+        const oh = ow / ratio;
+        const ox = (cw - ow) / 2;
+        const oy = ch - oh - (isVertical ? 220 : 140) + slideUp;
+        ctx.drawImage(state.overlayImg, ox, oy, ow, oh);
+      } else if (state.showSubBadge) {
+        // 내장 고화질 유튜브 구독 & 좋아요 배너 그리기
+        const boxW = isVertical ? 680 : 620;
+        const boxH = isVertical ? 104 : 92;
+        const bx = (cw - boxW) / 2;
+        const by = ch - boxH - (isVertical ? 220 : 135) + slideUp;
+
+        // 반투명 다크 카드 배경
+        ctx.shadowColor = 'rgba(0,0,0,0.65)';
+        ctx.shadowBlur = 24;
+        ctx.fillStyle = 'rgba(18, 20, 24, 0.92)';
+        ctx.beginPath();
+        ctx.roundRect(bx, by, boxW, boxH, 99);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // 빨간색 '구독' 버튼 알약
+        const subBtnW = 165, subBtnH = boxH - 28;
+        const subBtnX = bx + 18, subBtnY = by + 14;
+        // 1.5초 시점에 버튼이 살짝 눌리는 펄스 애니메이션
+        const pulse = (localT > 1.2 && localT < 1.6) ? 0.93 : 1.0;
+        ctx.save();
+        ctx.translate(subBtnX + subBtnW / 2, subBtnY + subBtnH / 2);
+        ctx.scale(pulse, pulse);
+        ctx.fillStyle = '#ff0033';
+        ctx.beginPath();
+        ctx.roundRect(-subBtnW / 2, -subBtnH / 2, subBtnW, subBtnH, 99);
+        ctx.fill();
+
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '800 26px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('▶ 구독하기', 0, 1);
+        ctx.restore();
+
+        // 좋아요 & 알림 텍스트
+        ctx.fillStyle = '#facc15';
+        ctx.font = '800 26px sans-serif';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('👍 좋아요   🔔 알림설정', subBtnX + subBtnW + 28, by + boxH / 2 + 1);
+      }
+
+      // 엔딩 하단 안내 문구
+      if (state.endingText.trim()) {
+        const capText = state.endingText.trim();
+        const fontSize = isVertical ? 32 : 30;
+        ctx.font = `700 ${fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+        const tw = ctx.measureText(capText).width;
+        const padX = 28, padY = 14;
+        const cx = (cw - (tw + padX * 2)) / 2;
+        const cy = ch - (fontSize + padY * 2) - (isVertical ? 110 : 48) + slideUp;
+
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.78)';
+        ctx.beginPath();
+        ctx.roundRect(cx, cy, tw + padX * 2, fontSize + padY * 2, 12);
+        ctx.fill();
+
+        ctx.fillStyle = '#ffffff';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(capText, cw / 2, cy + (fontSize + padY * 2) / 2);
+      }
+
+      ctx.restore();
+    }
+  }
+
+  function renderFrame() {
+    const cw = state.width, ch = state.height;
+    const seg = getCurrentSegment(state.currentTime);
+
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, cw, ch);
+
+    if (!seg) {
+      segmentBadge.textContent = '파일을 추가하세요';
+      ctx.fillStyle = '#181a1f';
+      ctx.fillRect(0, 0, cw, ch);
+      ctx.fillStyle = '#666';
+      ctx.font = 'bold 28px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('좌측 패널에서 WAV 오디오, 동영상, 영화 스틸을 추가하세요', cw / 2, ch / 2);
+      return;
+    }
+
+    segmentBadge.textContent = seg.label;
+
+    if (seg.type === 'still' || seg.type === 'outro') {
+      const stillObj = state.stills[seg.stillIndex];
+      const progress = seg.duration > 0 ? (state.currentTime - seg.start) / seg.duration : 0;
+      if (stillObj) drawStill(stillObj.img, progress);
+    } else if (seg.type === 'video') {
+      if (hiddenVideo.readyState >= 2) {
+        const vw = hiddenVideo.videoWidth, vh = hiddenVideo.videoHeight;
+        const vRatio = vw / vh, cRatio = cw / ch;
+        let dw, dh;
+        if (vRatio > cRatio) { dw = cw; dh = cw / vRatio; }
+        else { dh = ch; dw = ch * vRatio; }
+        ctx.drawImage(hiddenVideo, (cw - dw) / 2, (ch - dh) / 2, dw, dh);
+      }
+    }
+
+    drawOverlays(seg);
+  }
+
+  function syncMedia() {
+    const t = state.currentTime;
+    const seg = getCurrentSegment(t);
+
+    if (state.video) {
+      if (seg && seg.type === 'video') {
+        const vTime = Math.max(0, Math.min(state.video.duration - 0.05, t - seg.start));
+        if (Math.abs(hiddenVideo.currentTime - vTime) > 0.25) {
+          hiddenVideo.currentTime = vTime;
+        }
+        if (state.isPlaying && hiddenVideo.paused) {
+          hiddenVideo.play().catch(() => {});
+        }
+      } else {
+        if (!hiddenVideo.paused) hiddenVideo.pause();
+      }
+    }
+
+    if (state.audio) {
+      if (!state.isPlaying && Math.abs(hiddenAudio.currentTime - t) > 0.2) {
+        hiddenAudio.currentTime = Math.min(t, state.audio.duration);
+      }
+      if (state.isPlaying && hiddenAudio.paused && t < state.audio.duration) {
+        hiddenAudio.play().catch(() => {});
+      } else if (!state.isPlaying && !hiddenAudio.paused) {
+        hiddenAudio.pause();
+      }
+    }
+  }
+
+  let lastTick = 0;
+  function tick(now) {
+    if (!state.isPlaying) return;
+    const dt = (now - lastTick) / 1000;
+    lastTick = now;
+
+    state.currentTime += dt;
+    if (state.currentTime >= state.totalDuration) {
+      state.currentTime = state.totalDuration;
+      stopPlayback();
+      renderFrame();
+      updateTimeText();
+      return;
+    }
+
+    syncMedia();
+    renderFrame();
+    updateTimeText();
+    requestAnimationFrame(tick);
+  }
+
+  function startPlayback() {
+    if (state.currentTime >= state.totalDuration) state.currentTime = 0;
+    state.isPlaying = true;
+    btnPlay.textContent = '⏸ 일시정지';
+    if (state.audio) hiddenAudio.currentTime = state.currentTime;
+    lastTick = performance.now();
+    syncMedia();
+    requestAnimationFrame(tick);
+  }
+
+  function stopPlayback() {
+    state.isPlaying = false;
+    btnPlay.textContent = '▶ 재생';
+    hiddenVideo.pause();
+    hiddenAudio.pause();
+  }
+
+  btnPlay.addEventListener('click', () => {
+    if (state.isPlaying) stopPlayback();
+    else startPlayback();
+  });
+
+  scrubber.addEventListener('input', (e) => {
+    stopPlayback();
+    state.currentTime = parseFloat(e.target.value);
+    syncMedia();
+    renderFrame();
+    updateTimeText();
+  });
+
+  // 오디오 업로드
+  document.getElementById('inAudio').addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    hiddenAudio.src = url;
+    hiddenAudio.onloadedmetadata = () => {
+      state.audio = { url, duration: hiddenAudio.duration, name: file.name };
+      const info = document.getElementById('audioInfo');
+      info.style.display = 'flex';
+      info.innerHTML = `<span>🎵 ${file.name} (${hiddenAudio.duration.toFixed(1)}초)</span>`;
+      buildSchedule();
+      renderFrame();
+    };
+  });
+
+  // 동영상 업로드
+  document.getElementById('inVideo').addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    hiddenVideo.src = url;
+    hiddenVideo.muted = true;
+    hiddenVideo.onloadedmetadata = () => {
+      state.video = { url, duration: hiddenVideo.duration, name: file.name };
+      const info = document.getElementById('videoInfo');
+      info.style.display = 'flex';
+      info.innerHTML = `<span>🎞️ ${file.name} (${hiddenVideo.duration.toFixed(1)}초 · 무음)</span>`;
+      buildSchedule();
+      renderFrame();
+    };
+  });
+
+  // 스틸 업로드 및 위지윅 드래그 리스트
+  document.getElementById('inStills').addEventListener('change', (e) => {
+    Array.from(e.target.files).forEach(file => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.src = url;
+      img.onload = () => renderFrame();
+      state.stills.push({
+        id: Math.random().toString(36).slice(2),
+        name: file.name,
+        url,
+        img
+      });
+    });
+    e.target.value = '';
+    renderStillList();
+    buildSchedule();
+    renderFrame();
+  });
+
+  document.getElementById('btnClearStills').addEventListener('click', () => {
+    state.stills = [];
+    renderStillList();
+    buildSchedule();
+    renderFrame();
+  });
+
+  function renderStillList() {
+    const listEl = document.getElementById('stillList');
+    listEl.innerHTML = '';
+
+    state.stills.forEach((item, idx) => {
+      const row = document.createElement('div');
+      row.className = 'still-item';
+      row.draggable = true;
+
+      let roleHint = idx === 0 ? '시작 스틸' : '중간 분산 스틸';
+      if (state.stills.length > 1 && idx === state.stills.length - 1) {
+        roleHint = '엔딩 5초 우선 배치';
+      }
+
+      row.innerHTML = `
+        <div class="still-idx">${idx + 1}</div>
+        <img class="still-thumb" src="${item.url}" />
+        <div class="still-meta">
+          <div class="still-name">${item.name}</div>
+          <div class="still-tag">⋮⋮ 드래그 이동 · ${roleHint}</div>
+        </div>
+        <button class="still-del" title="삭제">✕</button>
+      `;
+
+      row.querySelector('.still-del').onclick = (ev) => {
+        ev.stopPropagation();
+        state.stills.splice(idx, 1);
+        renderStillList();
+        buildSchedule();
+        renderFrame();
+      };
+
+      row.addEventListener('dragstart', (ev) => {
+        state.dragIdx = idx;
+        row.classList.add('dragging');
+        ev.dataTransfer.effectAllowed = 'move';
+      });
+      row.addEventListener('dragend', () => {
+        state.dragIdx = null;
+        document.querySelectorAll('.still-item').forEach(el => el.classList.remove('dragging', 'drag-over'));
+      });
+      row.addEventListener('dragover', (ev) => {
+        ev.preventDefault();
+        if (state.dragIdx !== null && state.dragIdx !== idx) {
+          row.classList.add('drag-over');
+        }
+      });
+      row.addEventListener('dragleave', () => row.classList.remove('drag-over'));
+      row.addEventListener('drop', (ev) => {
+        ev.preventDefault();
+        row.classList.remove('drag-over');
+        if (state.dragIdx === null || state.dragIdx === idx) return;
+        const moved = state.stills.splice(state.dragIdx, 1)[0];
+        state.stills.splice(idx, 0, moved);
+        state.dragIdx = null;
+        renderStillList();
+        buildSchedule();
+        renderFrame();
+      });
+
+      listEl.appendChild(row);
+    });
+  }
+
+  // 오버레이 옵션 핸들러
+  document.getElementById('chkSubscribeBadge').addEventListener('change', (e) => {
+    state.showSubBadge = e.target.checked;
+    renderFrame();
+  });
+
+  document.getElementById('inOverlayPng').addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.src = url;
+    img.onload = () => {
+      state.overlayImg = img;
+      const info = document.getElementById('overlayPngInfo');
+      info.style.display = 'flex';
+      info.innerHTML = `<span>🖼️ ${file.name} 적용됨</span><button id="btnClearPng" style="padding:2px 6px; font-size:10px;">해제</button>`;
+      document.getElementById('btnClearPng').onclick = () => {
+        state.overlayImg = null;
+        info.style.display = 'none';
+        renderFrame();
+      };
+      renderFrame();
+    };
+  });
+
+  document.getElementById('txtWatermark').addEventListener('input', (e) => {
+    state.watermarkText = e.target.value;
+    renderFrame();
+  });
+
+  document.getElementById('txtEndingCaption').addEventListener('input', (e) => {
+    state.endingText = e.target.value;
+    renderFrame();
+  });
+
+  // 화면비 전환
+  document.getElementById('btnRatio').addEventListener('click', (e) => {
+    state.isVertical = !state.isVertical;
+    state.width = state.isVertical ? 1080 : 1920;
+    state.height = state.isVertical ? 1920 : 1080;
+    canvas.width = state.width;
+    canvas.height = state.height;
+    e.target.textContent = state.isVertical
+      ? '화면비: 9:16 쇼츠 (1080×1920)'
+      : '화면비: 16:9 가로 (1920×1080)';
+    renderFrame();
+  });
+
+  // 동영상 내보내기
+  let activeRecorder = null;
+  document.getElementById('btnExport').addEventListener('click', async () => {
+    if (!state.audio && !state.video && state.stills.length === 0) {
+      alert('먼저 오디오, 동영상 또는 스틸 이미지를 추가해주세요.');
+      return;
+    }
+
+    stopPlayback();
+    state.isExporting = true;
+    state.currentTime = 0;
+
+    const modal = document.getElementById('exportModal');
+    const fill = document.getElementById('progressFill');
+    modal.classList.add('active');
+    fill.style.width = '0%';
+
+    const canvasStream = canvas.captureStream(30);
+    const combinedStream = new MediaStream(canvasStream.getVideoTracks());
+
+    let audioCtx, dest;
+    if (state.audio) {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const source = audioCtx.createMediaElementSource(hiddenAudio);
+      dest = audioCtx.createMediaStreamDestination();
+      source.connect(dest);
+      source.connect(audioCtx.destination);
+      dest.stream.getAudioTracks().forEach(track => combinedStream.addTrack(track));
+    }
+
+    const mimeType = MediaRecorder.isTypeSupported('video/mp4;codecs=avc1')
+      ? 'video/mp4;codecs=avc1'
+      : (MediaRecorder.isTypeSupported('video/webm;codecs=vp9') ? 'video/webm;codecs=vp9' : 'video/webm');
+
+    const chunks = [];
+    activeRecorder = new MediaRecorder(combinedStream, {
+      mimeType,
+      videoBitsPerSecond: 6000000
+    });
+
+    activeRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) chunks.push(e.data);
+    };
+
+    activeRecorder.onstop = () => {
+      modal.classList.remove('active');
+      if (audioCtx) audioCtx.close();
+      if (!state.isExporting) return;
+
+      const blob = new Blob(chunks, { type: mimeType });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
+      a.href = url;
+      a.download = `kinocine_review_${Date.now()}.${ext}`;
+      a.click();
+      state.isExporting = false;
+    };
+
+    renderFrame();
+    activeRecorder.start(200);
+    startPlayback();
+
+    const checkTimer = setInterval(() => {
+      if (!state.isExporting) {
+        clearInterval(checkTimer);
+        return;
+      }
+      const pct = Math.min(100, (state.currentTime / state.totalDuration) * 100);
+      fill.style.width = `${pct}%`;
+
+      if (!state.isPlaying || state.currentTime >= state.totalDuration) {
+        clearInterval(checkTimer);
+        if (activeRecorder.state === 'recording') activeRecorder.stop();
+      }
+    }, 100);
+  });
+
+  document.getElementById('btnCancelExport').addEventListener('click', () => {
+    state.isExporting = false;
+    stopPlayback();
+    if (activeRecorder && activeRecorder.state === 'recording') activeRecorder.stop();
+    document.getElementById('exportModal').classList.remove('active');
+  });
+
+  buildSchedule();
+  renderFrame();
+</script>
 </body>
 </html>
